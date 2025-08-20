@@ -4,15 +4,15 @@ output_formats: [vasp, cif]
 jobs:
   - name: test
     type: classical
-    ions_count: {Zn: 1, O: 1}
+    ions_count: {Zn: 8, O: 8}
     cell_parameters:
-      a: 3.24
-      b: 3.24
-      c: 5.22
+      a: 4.56
+      b: 4.56
+      c: 4.56
       alpha: 90.0
       beta: 90.0
-      gamma: 120.0
-      type: hexagonal
-    grid: 6
-    group: 1  # P1 (no symmetry)
+      gamma: 90.0
+      type: cubic
+    grid: 4
+    group: 216
     top: 1
