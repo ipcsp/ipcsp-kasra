@@ -120,6 +120,8 @@ class PhaseNameDeterminer:
     @staticmethod
     def determine_phase_name(ions_count):
         elements = set(ions_count.keys())
+        
+        # Check for known specific compositions first
         if {'Sr', 'Ti', 'O'} <= elements:
             return 'SrTiO'
         elif {'Y', 'O'} <= elements and 'Ti' not in elements:
@@ -134,8 +136,14 @@ class PhaseNameDeterminer:
             return 'ZnS'
         elif {'Zr', 'O'} <= elements:
             return 'ZrO'
-        print("Warning: Unknown composition, defaulting to SrTiO phase.")
-        return 'SrTiO'
+        
+        # For any other composition, create a phase name from the elements
+        # Sort elements alphabetically for consistency
+        sorted_elements = sorted(elements)
+        phase_name = ''.join(sorted_elements)
+        
+        print(f"Using auto-generated phase name: {phase_name}")
+        return phase_name
 
 class CLIInputManager:
     def __init__(self, analyzer: CrystalSystemAnalyzer, phase_determiner: PhaseNameDeterminer, ml_interface: MLatticeABCInterface):
@@ -571,7 +579,11 @@ class CSPTestCase:
         
         # Get expected energy from CIF
         cif_file, lib_file = self._get_cif_and_lib(phase_name)
-        self.expected_energy = self.get_cif_energy(cif_file, lib_file, ions_count)
+        if cif_file is not None and lib_file is not None:
+            self.expected_energy = self.get_cif_energy(cif_file, lib_file, ions_count)
+        else:
+            print("No reference CIF available - skipping expected energy calculation")
+            self.expected_energy = 0.0  # Default value for unknown compositions
         
         # Adjust for multiples if needed
         if 'multiple' in self.params and self.params['multiple'] > 1:
@@ -660,7 +672,17 @@ class CSPTestCase:
         Returns the best energy found.
         """
         os.makedirs(self.results_dir, exist_ok=True)
-        calc = GULP(keywords='single', library=os.path.join(".", lib))
+        
+        # Check if we have GULP library for this composition
+        has_gulp_library = os.path.exists(lib)
+        
+        if has_gulp_library:
+            calc = GULP(keywords='single', library=os.path.join(".", lib))
+        else:
+            print(f"Warning: No GULP library found at {lib}")
+            print("Skipping GULP optimization - using SPP scores only")
+            calc = None
+        
         results_ip = deepcopy(results)
         N_atoms = sum(ions_count.values())
         spp_dir = os.path.join(os.path.dirname(__file__), 'SPP', 'SPP')
@@ -673,28 +695,49 @@ class CSPTestCase:
         best_val = float('inf')
         best_idx = 0
         print(f"\n========== Processing and locally optimising solutions for {self.name} ==========\n")
+        
         for idx, cryst in enumerate(results):
             if len(cryst.arrays['positions']) == N_atoms:
-                cryst.calc = calc
-                init[idx] = cryst.get_potential_energy()
+                if calc is not None:
+                    try:
+                        cryst.calc = calc
+                        init[idx] = cryst.get_potential_energy()
+                    except Exception as e:
+                        print(f"Warning: GULP energy calculation failed for solution {idx}: {e}")
+                        init[idx] = 0.0  # Use SPP score instead
+                else:
+                    init[idx] = 0.0  # No GULP, use SPP score
+                
                 spp_scores[idx] = spp.score(cryst.get_chemical_symbols(), cryst.get_positions(), cryst.get_cell(), pbc=True)
                 _ = compute_spp_objective(cryst, spp)
-        calc.set(keywords='opti conjugate conp diff comp c6')
-        prev_energy = -1000000
-        for idx, cryst in enumerate(results):
-            if init[idx] < -0.00001:
-                if init[idx] - prev_energy > 0.000001:
-                    prev_energy = init[idx]
-                    opt = calc.get_optimizer(cryst)
-                    try:
-                        opt.run(fmax=0.05)
-                        final[idx] = cryst.get_potential_energy()
-                    except ValueError:
-                        print("One of the relaxations failed using initial energy instead")
-                        final[idx] = init[idx]
-                    if final[idx] < best_val:
-                        best_idx = idx
-                        best_val = final[idx]
+        
+        # Only do GULP optimization if we have a library
+        if calc is not None:
+            calc.set(keywords='opti conjugate conp diff comp c6')
+            prev_energy = -1000000
+            for idx, cryst in enumerate(results):
+                if init[idx] < -0.00001:
+                    if init[idx] - prev_energy > 0.000001:
+                        prev_energy = init[idx]
+                        opt = calc.get_optimizer(cryst)
+                        try:
+                            opt.run(fmax=0.05)
+                            final[idx] = cryst.get_potential_energy()
+                        except ValueError:
+                            print("One of the relaxations failed using initial energy instead")
+                            final[idx] = init[idx]
+                        if final[idx] < best_val:
+                            best_idx = idx
+                            best_val = final[idx]
+        else:
+            # No GULP optimization - use SPP scores for ranking
+            print("Using SPP scores for structure ranking (no GULP optimization)")
+            for idx in range(len(results)):
+                final[idx] = spp_scores[idx]
+                if spp_scores[idx] < best_val:
+                    best_idx = idx
+                    best_val = spp_scores[idx]
+        
         solution_data = []
         for i in range(len(results)):
             if final[i] != 0:
@@ -705,8 +748,12 @@ class CSPTestCase:
         count = 1
         with open(os.path.join(self.results_dir, "energies.txt"), "w+") as f:
             for final_e, init_e, spp_score, atoms_lattice, atoms_min in solution_data:
-                print(f"Solution{count}: ", "Energy initial: ", init_e, " final: ", final_e, f" SPP: {spp_score}")
-                print(f"Solution{count}: ", "Energy initial: ", init_e, " final: ", final_e, f" SPP: {spp_score}", file=f)
+                if calc is not None:
+                    print(f"Solution{count}: ", "Energy initial: ", init_e, " final: ", final_e, f" SPP: {spp_score}")
+                    print(f"Solution{count}: ", "Energy initial: ", init_e, " final: ", final_e, f" SPP: {spp_score}", file=f)
+                else:
+                    print(f"Solution{count}: ", "SPP score: ", spp_score)
+                    print(f"Solution{count}: ", "SPP score: ", spp_score, file=f)
                 for fmt in self.output_formats:
                     ase.io.write(os.path.join(self.results_dir, f'solution{count}_lattice.{fmt}'), atoms_lattice)
                     ase.io.write(os.path.join(self.results_dir, f'solution{count}_minimised.{fmt}'), atoms_min)
@@ -765,6 +812,7 @@ class CSPTestCase:
     def _get_cif_and_lib(self, phase_name):
         """
         Returns the CIF filename and library file for a given phase.
+        Returns (None, None) for unknown phases to allow testing any composition.
         """
         if phase_name == 'SrTiO':
             return 'SrTiO3.cif', Phase('SrTiO').filedir / 'SrTiO/buck.lib'
@@ -778,7 +826,9 @@ class CSPTestCase:
         elif phase_name == 'CaAlSiO':
             return 'Ca3Al2Si3O12.cif', Phase('CaAlSiO').filedir / 'CaAlSiO/pedone.lib'
         else:
-            raise ValueError(f"Unknown phase name: {phase_name}")
+            # For unknown phases, return None to allow testing any composition
+            print(f"Note: No reference CIF/library for phase '{phase_name}' - using SPP-only analysis")
+            return None, None
 
 class CSPBenchmarkRunner:
     """

@@ -2,17 +2,17 @@ results_dir: ../results
 output_formats: [vasp, cif]
 
 jobs:
-  - name: config
+  - name: test
     type: classical
-    ions_count: {Ca: 4, Ti: 4, O: 12}
+    ions_count: {Zn: 1, O: 1}
     cell_parameters:
-      a: 5.4
-      b: 5.5
-      c: 7.6
+      a: 3.24
+      b: 3.24
+      c: 5.22
       alpha: 90.0
       beta: 90.0
-      gamma: 90.0
-      type: orthorhombic
+      gamma: 120.0
+      type: hexagonal
     grid: 6
-    group: 62   # Pnma
+    group: 1  # P1 (no symmetry)
     top: 1
